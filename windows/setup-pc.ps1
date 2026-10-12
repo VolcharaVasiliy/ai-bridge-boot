@@ -27,6 +27,7 @@ $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 function Say([string]$m, [string]$c = 'Cyan') { Write-Host $m -ForegroundColor $c }
+function Pause-Short([string]$m) { if ($env:AI_BRIDGE_NO_PAUSE) { return }; try { Read-Host $m | Out-Null } catch {} }
 function Ok([string]$m)  { Write-Host ('  [ok]    ' + $m) -ForegroundColor Green }
 function Warn([string]$m){ Write-Host ('  [warn]  ' + $m) -ForegroundColor Yellow }
 function Note([string]$m){ Write-Host ('  [check] ' + $m) -ForegroundColor DarkGray }
@@ -287,4 +288,4 @@ Say '  2) Скажите агенту «готово» — он найдёт П�
 Say '  Управление раннером: файл STOP в папке elev / Stop-ScheduledTask ArenaElev'
 Say '  Аудит админ-действий: elev\elev.log'
 Say ''
-if (-not $Check) { Read-Host 'Нажмите Enter, чтобы закрыть' }
+if (-not $Check) { Pause-Short 'Нажмите Enter, чтобы закрыть' }

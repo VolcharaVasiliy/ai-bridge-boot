@@ -22,6 +22,7 @@ $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
 function Say([string]$m, [string]$c = 'Cyan') { Write-Host $m -ForegroundColor $c }
+function Pause-Short([string]$m) { if ($env:AI_BRIDGE_NO_PAUSE) { return }; try { Read-Host $m | Out-Null } catch {} }
 
 # elev ация
 try {
@@ -40,7 +41,7 @@ if (-not $isAdmin -and -not $Check) {
 $Key = $Key.Trim()
 if ($Key -notmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ') {
   Say ('НЕ ПОХОЖЕ на публичный ключ: ' + $Key.Substring(0, [Math]::Min(40, $Key.Length)) + '...') Red
-  if (-not $Check) { Read-Host 'Нажмите Enter, чтобы выйти' }
+  if (-not $Check) { Pause-Short 'Нажмите Enter, чтобы выйти' }
   exit 1
 }
 
@@ -82,7 +83,7 @@ if (-not $Check) {
 
   Say ''
   Say ('Готово. Ключ «' + $tag + '» принят на этом ПК.') Green
-  Read-Host 'Нажмите Enter, чтобы закрыть'
+  Pause-Short 'Нажмите Enter, чтобы закрыть'
 } else {
   Say ''
   Say 'Это режим проверки — ничего не менялось.' DarkGray
