@@ -87,7 +87,7 @@ $adminKeys = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
 $keyBlob = ($AgentKey -split '\s+')[1]
 foreach ($f in @($adminKeys, $userKeys)) {
   $has = $false
-  if (Test-Path $f -and $keyBlob) { $has = ([string]::Join("`n", @(Get-Content $f -ErrorAction SilentlyContinue)) -like ('*' + $keyBlob + '*')) }
+  if ((Test-Path $f) -and $keyBlob) { $has = ([string]::Join("`n", @(Get-Content $f -ErrorAction SilentlyContinue)) -like ('*' + $keyBlob + '*')) }
   if ($has) { Ok ('ключ уже стоит: ' + $f) }
   else {
     Step ('поставить ключ в ' + $f) {
