@@ -47,6 +47,22 @@ function Pause-If-Interactive {
   try { Read-Host 'Press Enter to close' | Out-Null } catch {}
 }
 
+function Get-FileApi([string]$relPath, [string]$outFile) {
+  # Preferred way: GitHub Contents API - it is not cached by ISP/CDN proxies,
+  # so a fresh script is guaranteed (raw.githubusercontent.com can serve a stale
+  # copy from a provider cache for up to ~30 minutes after an update).
+  if ($BaseUrl -notmatch 'raw\.githubusercontent\.com') { return $false }
+  $api = 'https://api.github.com/repos/' + $Repo + '/contents/' + $relPath + '?ref=' + $Ref
+  try {
+    $j = Invoke-RestMethod -Uri $api -UseBasicParsing -TimeoutSec 60 -Headers @{ 'User-Agent' = 'ai-bridge-boot'; 'Accept' = 'application/vnd.github+json'; 'Cache-Control' = 'no-cache' }
+    if ($j -and $j.content) {
+      [IO.File]::WriteAllBytes($outFile, [Convert]::FromBase64String($j.content))
+      return $true
+    }
+  } catch { }
+  return $false
+}
+
 function Get-Retry([string]$url, [string]$outFile, [int]$minBytes) {
   for ($i = 1; $i -le 3; $i++) {
     try {
@@ -79,12 +95,14 @@ try {
 
   Info 'Downloading setup scripts...'
   $files = @(
-    @{ url = $BaseUrl + '/windows/setup-pc.ps1';    path = (Join-Path $win 'setup-pc.ps1');  min = 5000; critical = $true  },
-    @{ url = $BaseUrl + '/windows/elev/runner.ps1'; path = (Join-Path $elev 'runner.ps1');   min = 3000; critical = $true  },
-    @{ url = $BaseUrl + '/windows/add-key.ps1';     path = (Join-Path $win 'add-key.ps1');   min = 2000; critical = $false }
+    @{ rel = 'windows/setup-pc.ps1';    url = $BaseUrl + '/windows/setup-pc.ps1';    path = (Join-Path $win 'setup-pc.ps1');  min = 5000; critical = $true  },
+    @{ rel = 'windows/elev/runner.ps1'; url = $BaseUrl + '/windows/elev/runner.ps1'; path = (Join-Path $elev 'runner.ps1');   min = 3000; critical = $true  },
+    @{ rel = 'windows/add-key.ps1';     url = $BaseUrl + '/windows/add-key.ps1';     path = (Join-Path $win 'add-key.ps1');   min = 2000; critical = $false }
   )
   foreach ($f in $files) {
-    if (Get-Retry $f.url $f.path $f.min) {
+    $got = (Get-FileApi $f.rel $f.path) -and (Test-Path $f.path) -and ((Get-Item $f.path).Length -ge $f.min)
+    if (-not $got) { $got = Get-Retry $f.url $f.path $f.min }
+    if ($got) {
       $kb = [Math]::Round((Get-Item $f.path).Length / 1kb)
       Ok ('downloaded: ' + (Split-Path $f.path -Leaf) + ' (' + $kb + ' KB)')
     } elseif ($f.critical) {
