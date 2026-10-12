@@ -42,7 +42,7 @@ if (-not $Key) {
   Say 'Публичный ключ не задан. Пример строки запуска:' Red
   Say "  &([scriptblock]::Create((irm .../windows/add-key.ps1))) -Key 'ssh-ed25519 AAAA... name'" DarkGray
   Pause-Short 'Нажмите Enter, чтобы выйти'
-  exit 1
+  return
 }
 
 $parts = $Key -split '\s+'
@@ -57,7 +57,7 @@ if (($type -notin @('ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'sk-ssh-ed2
   Say ('НЕ ПОХОЖЕ на публичный SSH-ключ: ' + $Key.Substring(0, [Math]::Min(60, $Key.Length)) + '...') Red
   Say 'Нужна строка вида: ssh-ed25519 AAAAC3Nza... имя-агента' DarkGray
   Pause-Short 'Нажмите Enter, чтобы выйти'
-  exit 1
+  return
 }
 
 $userKeys  = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
@@ -78,7 +78,7 @@ if (-not $isAdmin -and -not $Check) {
     $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ('"' + $cmd + '"'))
   }
   Start-Process powershell -Verb RunAs -ArgumentList $a
-  exit
+  if ($PSCommandPath) { exit } else { return }
 }
 
 # ---------- install the key ----------
@@ -105,10 +105,7 @@ foreach ($f in @($adminKeys, $userKeys)) {
 if ($Check) {
   Say ''
   Say 'Это режим проверки - ничего не менялось.' DarkGray
-  exit 0
-}
-
-if ($changed -gt 0) {
+} elseif ($changed -gt 0) {
   try {
     icacls $adminKeys /inheritance:r 2>&1 | Out-Null
     icacls $adminKeys /grant '*S-1-5-32-544:F' '*S-1-5-18:F' 2>&1 | Out-Null
