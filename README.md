@@ -4,6 +4,10 @@
 (Этот репозиторий — публичный «загрузчик». Никаких секретов внутри: только скрипты
 и публичный SSH-ключ агента. Приватный архив с заметками живёт отдельно.)
 
+> **Ты ИИ-агент, и владелец дал тебе эту ссылку?** Твой раздел — «Для ИИ-агентов» ниже:
+> сгенерируй свой ключ, выдай владельцу одну готовую строку, забери Tailscale auth key
+> по запросу, подними канал сам. Владельцу ничего объяснять не нужно.
+
 ## TL;DR — одна команда
 
 **Windows, в PowerShell** (права админа запросятся сами, один клик UAC):
@@ -92,16 +96,64 @@ PowerShell-«scriptblock» форма позволяет передать пар
 ... -NoElevate
 ```
 
-## Для ИИ-агентов (sandbox side)
+## Для ИИ-агентов: самоподключение
 
-`linux/boot.sh` скачивает и запускает `linux/ts-boot.sh` — самовосстанавливающуюся
-инициализацию канала (binaries → systemd → dummy0 → state → login → поиск ПК → ping).
-Дальше работает `linux/remote.sh`:
+Тебе дали этот репозиторий, чтобы ты работал на ПК владельца (Windows).
+Владельцу выдавай ТОЛЬКО готовые строки для вставки в PowerShell — объяснять
+ничего не нужно (от него: одно «Да» в UAC и один auth key по твоему запросу).
+
+**1. Свой ключ.** Чужой не использовать. Если `~/.ssh/agent_ed25519` ещё нет:
+
+```bash
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/agent_ed25519 -C 'имя-агента'
+```
+
+(remote.sh по умолчанию использует именно этот файл; другой путь — через `BRIDGE_KEY=...`.)
+
+**2. Отдай владельцу одну строку** — с содержимым твоего `.pub` целиком
+(`cat ~/.ssh/agent_ed25519.pub`):
+
+```powershell
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/windows/add-key.ps1))) -Key 'ssh-ed25519 AAAA... имя-агента'
+```
+
+Он вставит её в PowerShell и нажмёт «Да» в UAC. Скрипт идемпотентен и чужие ключи
+не трогает. Если ПК ещё вообще не настраивался — вместо этого дай строку с
+`boot.ps1` + `-AgentKey '<.pub>'` (см. «Другой ИИ со своим ключом»).
+
+**3. Подними канал у себя:**
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/linux/boot.sh)
+```
+
+Если увидел `*** LOGIN REQUIRED ***` — попроси у владельца ОДИН Tailscale auth key
+(админка Tailscale → Settings → Keys → Generate; одноразовый), сохрани и повтори:
+
+```bash
+printf '%s' '<KEY>' > ~/arena-bridge/.ts-authkey && chmod 600 ~/arena-bridge/.ts-authkey
+```
+
+После успешного входа напомни владельцу отозвать auth key в админке.
+
+**4. Windows-логин владельца** (нужен для ssh) — попроси имя пользователя
+(в отчёте setup-скрипта это строка «пользователь: …»):
+
+```bash
+echo '<username>' > ~/arena-bridge/user.txt
+```
+
+**5. Проверь связь:**
+
+```bash
+~/arena-bridge/remote.sh ping          # -> PONG
+```
+
+Дальше работай через `remote.sh`:
 
 ```bash
 ~/arena-bridge/remote.sh info                 # что настроено (host/port/user/socks)
-~/arena-bridge/remote.sh ping                 # связь -> PONG
-~/arena-bridge/remote.sh cmd 'dir C:\'        # cmd.exe
+~/arena-bridge/remote.sh cmd 'dir C:/'        # cmd.exe
 ~/arena-bridge/remote.sh psc 'Get-Date'       # PowerShell одной строкой
 ~/arena-bridge/remote.sh ps < script.ps1      # PowerShell-скрипт
 ~/arena-bridge/remote.sh get 'C:/p/f' ./f     # скачать
@@ -109,13 +161,9 @@ PowerShell-«scriptblock» форма позволяет передать пар
 ~/arena-bridge/remote.sh elev 'winget ...'    # С АДМИН-ПРАВАМИ (аудит)
 ```
 
-**Ключевой сценарий:** если `ts-boot.sh` пишет `*** LOGIN REQUIRED ***` — попроси
-у владельца **Tailscale auth key** (`tskey-auth-...`), сохрани его в
-`~/arena-bridge/.ts-authkey` (chmod 600) и повтори запуск. Владельцу больше ничего
-не нужно: дальше агент поднимает связь сам, без новых ссылок и ключей.
-
-Нужен Windows-логин для `ssh user@host`: положи его в `~/arena-bridge/user.txt`
-(или спроси у владельца — он выведен в отчёте setup-скрипта).
+Диагностика: `bash ~/arena-bridge/ts-boot.sh` — идемпотентный самовосстановитель
+канала (гоняй в начале хода или если что-то отвалилось). Секреты (auth key,
+приватный ключ) — только в `~/arena-bridge`, `chmod 600`, в чат целиком не печатать.
 
 ## Безопасность
 
