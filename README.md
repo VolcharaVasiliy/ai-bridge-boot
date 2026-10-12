@@ -26,6 +26,31 @@ bash <(curl -fsSL https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-bo
 
 Больше ничего не нужно: ни скачивать, ни распаковывать, ни что-то править руками.
 
+## Другой ИИ со своим ключом (несколько агентов)
+
+Каждый агент подключается **своим** ключом. Приватный ключ никогда не покидает
+песочницу агента — на ПК уходит только `.pub`. Доступ выдаёт владелец: одна строка
+в PowerShell + один клик UAC. Ключи не затирают друг друга.
+
+**ПК уже настроен — добавить ключ ещё одного ИИ** (агент вставляет свой ключ):
+
+```powershell
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/windows/add-key.ps1))) -Key 'ssh-ed25519 AAAA... имя-агента'
+```
+
+**Новый ПК — холодный старт сразу с ключом этого ИИ:**
+
+```powershell
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/boot.ps1))) -AgentKey 'ssh-ed25519 AAAA... имя-агента'
+```
+
+**Интерактивно** (скрипт спросит ключ):
+`irm https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/windows/add-key.ps1 | iex`
+
+`-Check` в конце — проверить без изменений. Отозвать доступ одного ИИ: удалить его
+строку из `C:\ProgramData\ssh\administrators_authorized_keys` и
+`C:\Users\<user>\.ssh\authorized_keys`, затем `Restart-Service sshd`.
+
 ## Что делает Windows-команда
 
 1. Скачивает скрипты настройки с GitHub (в `%LOCALAPPDATA%\ai-bridge\boot`)
@@ -60,6 +85,9 @@ PowerShell-«scriptblock» форма позволяет передать пар
 # свой публичный ключ агента вместо встроенного:
 ... -AgentKey "ssh-ed25519 AAAA... my-agent"
 
+# добавить ключ ЕЩЁ ОДНОГО агента (ПК уже настроен; ключи не затираются):
+&([scriptblock]::Create((irm https://raw.githubusercontent.com/VolcharaVasiliy/ai-bridge-boot/main/windows/add-key.ps1))) -Key "ssh-ed25519 AAAA... my-agent"
+
 # прогнать setup в текущем админском окне (без нового UAC и без нового окна):
 ... -NoElevate
 ```
@@ -83,7 +111,7 @@ PowerShell-«scriptblock» форма позволяет передать пар
 
 **Ключевой сценарий:** если `ts-boot.sh` пишет `*** LOGIN REQUIRED ***` — попроси
 у владельца **Tailscale auth key** (`tskey-auth-...`), сохрани его в
-`~/arena-bridge/.ts-authkey` (chmod 600) и повторي запуск. Владельцу больше ничего
+`~/arena-bridge/.ts-authkey` (chmod 600) и повтори запуск. Владельцу больше ничего
 не нужно: дальше агент поднимает связь сам, без новых ссылок и ключей.
 
 Нужен Windows-логин для `ssh user@host`: положи его в `~/arena-bridge/user.txt`
@@ -98,6 +126,8 @@ PowerShell-«scriptblock» форма позволяет передать пар
 - Админ-команды идут через задачу `ArenaElev` с журналом `elev\elev.log`.
 - Выключить всё у владельца: `Stop-ScheduledTask ArenaElev`,
   `Stop-Service sshd`, в админке Tailscale — удалить узел агента.
+- Доступ выдаёт только владелец (UAC). У каждого ИИ — свой ключ: ключи не затирают
+  друг друга, отзыв точечный (удалить строку ключа + `Restart-Service sshd`).
 
 ## Известные грабли (проверено на практике)
 
@@ -109,13 +139,14 @@ PowerShell-«scriptblock» форма позволяет передать пар
 | ssh `UNPROTECTED PRIVATE KEY FILE` | права на ключ слабые | `chmod 600` (ts-boot делает сам) |
 | tailscaled «висит» на логине в песочнице | интерфейс только link-local → «сети нет» | `dummy0 192.0.2.1/32` (ts-boot делает сам) |
 | `scp`: `No such file` при порте | scp требует `-P`, а не `-p` | учтено в remote.sh |
+| add-key: «НЕ ПОХОЖЕ на публичный SSH-ключ» | передан приватный/битый ключ | нужен файл `.pub`: `ssh-ed25519 AAAA...` |
 
 ## Файлы
 
 ```
 boot.ps1                  <- одноклик-загрузчик для Windows (эта страница, TL;DR)
 windows/setup-pc.ps1      <- полная идемпотентная настройка ПК
-windows/add-key.ps1       <- добавить ещё один публичный ключ агента
+windows/add-key.ps1       <- подключить любого ИИ: добавить его публичный ключ (одна строка)
 windows/elev/runner.ps1   <- админ-раннер (исполняет задания из elev\in)
 windows/elev/enable-elev.ps1
 windows/plan-b-bore/      <- запасной путь без Tailscale (публичный bore-туннель)
@@ -126,6 +157,9 @@ linux/remote.sh           <- пульт агента (cmd/ps/get/put/elev)
 
 ## Замена встроенного ключа
 
-В `windows/setup-pc.ps1` вшит публичный ключ конкретного агента (владельца репо).
-Чтобы подключить другого агента: либо запусти `windows/add-key.ps1 -Key "ssh-ed25519 AAAA... tag"`,
-либо передай `-AgentKey` в boot.ps1.
+В `windows/setup-pc.ps1` вшит публичный ключ агента по умолчанию. Другие агенты
+подключаются одной строкой (см. раздел «Другой ИИ со своим ключом»):
+`add-key.ps1 -Key "ssh-ed25519 AAAA... tag"` при уже настроенном ПК или
+`boot.ps1 -AgentKey "ssh-ed25519 AAAA... tag"` при холодном старте.
+Проверено на живом ПК: `add-key.ps1 -Key <тестовый ключ>` добавил ключ в оба
+файла, ACL и sshd перезапустил; повторный запуск — «уже стоит, ничего не менялось».

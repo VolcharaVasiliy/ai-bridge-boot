@@ -48,6 +48,7 @@ try {
 if (-not $isAdmin -and -not $Check) {
   Say 'Запрашиваю права администратора (нажмите «Да» в UAC)...' Yellow
   $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'))
+  if ($AgentKey)     { $args += @('-AgentKey', ('"' + $AgentKey + '"')) }
   if ($TailscaleKey) { $args += @('-TailscaleKey', $TailscaleKey) }
   Start-Process powershell -Verb RunAs -ArgumentList $args
   exit
@@ -83,9 +84,10 @@ Say '[2/6] SSH-ключ агента'
 $userKeys  = Join-Path $env:USERPROFILE '.ssh\authorized_keys'
 $adminKeys = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
 
+$keyBlob = ($AgentKey -split '\s+')[1]
 foreach ($f in @($adminKeys, $userKeys)) {
   $has = $false
-  if (Test-Path $f) { $has = ([string]::Join("`n", @(Get-Content $f -ErrorAction SilentlyContinue)) -like '*arena-agent*') }
+  if (Test-Path $f -and $keyBlob) { $has = ([string]::Join("`n", @(Get-Content $f -ErrorAction SilentlyContinue)) -like ('*' + $keyBlob + '*')) }
   if ($has) { Ok ('ключ уже стоит: ' + $f) }
   else {
     Step ('поставить ключ в ' + $f) {
