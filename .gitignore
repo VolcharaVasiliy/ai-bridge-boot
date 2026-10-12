@@ -1,0 +1,5 @@
+# runtime junk
+*.log
+*.tmp
+boot-local/
+.venv/
