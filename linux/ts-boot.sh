@@ -1,7 +1,10 @@
 #!/bin/bash
 # ============================================================
-#  ts-boot.sh v4 — SELF-HEALING bootstrap of the AI <-> PC link.
+#  ts-boot.sh v4.1 — SELF-HEALING bootstrap of the AI <-> PC link.
 #  Idempotent: safe to run at the start of every session.
+#  v4.1 (2026-10-13): + link warm-up (tailscale ping before probing
+#  ports; nc probe retried x3 — DERP relay needs a few seconds on
+#  first contact, and the very first SOCKS5 probe usually fails).
 #
 #   1) permissions (reset after sandbox rebuild)
 #   2) tailscale/netcat binaries (re-download if wiped)
@@ -144,6 +147,20 @@ if [ -n "$PEER" ]; then
   echo "22" > "$RUNTIME/port.txt"
   echo "127.0.0.1:1055" > "$RUNTIME/socks.txt"
   echo "PC found: $PEER (written to host.txt/port.txt/socks.txt)"
+
+  echo "== 7b. warm-up =="
+  # DERP-relay first contact: the very first SOCKS5 connection usually
+  # fails with "General SOCKS server failure". Ping the peer to bring up
+  # the path, then probe the ssh port up to 3 times before moving on.
+  timeout 20 sudo $TS --socket="$SOCK" ping -c 2 "$PEER" 2>&1 | head -2 || true
+  for i in 1 2 3; do
+    if timeout 15 nc -X 5 -x 127.0.0.1:1055 -z -w 8 "$PEER" 22 2>/dev/null; then
+      echo "ssh port reachable (attempt $i)"
+      break
+    fi
+    [ "$i" -lt 3 ] && echo "probe $i failed (normal on cold relay link), retry in 4s..." && sleep 4
+    [ "$i" -eq 3 ] && echo "WARN: ssh port not reachable after 3 tries - check sshd on the PC"
+  done
 else
   echo "no Windows peer found - check that Tailscale is online on the PC"
 fi
