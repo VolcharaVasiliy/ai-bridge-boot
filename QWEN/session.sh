@@ -17,8 +17,11 @@
 # ============================================================
 set -u
 PERSIST="${QWEN_PERSIST:-/home/user}"
-[ -w "$PERSIST" ] || PERSIST="$HOME"
+# functional writability test: `[ -w ]` alone proved unreliable in some builds
+{ mkdir -p "$PERSIST" 2>/dev/null && touch "$PERSIST/.wtest" 2>/dev/null && rm -f "$PERSIST/.wtest"; } \
+  || PERSIST="$HOME"
 BR="$PERSIST/qwen-bridge"
+SPARE="${QWEN_SPARE:-/tmp/qwen-bridge-spare}"
 
 SOCK=/tmp/tailscaled.sock
 STATE=/var/lib/tailscale/tailscaled.state
@@ -28,18 +31,45 @@ AUTHKEY="$BR/.ts-authkey"
 TS_HOSTNAME="${TS_HOSTNAME:-qwen-agent}"
 SOCKS_PORT="${TS_SOCKS_PORT:-1055}"
 
+CRIT="ssh/agent_ed25519 ssh/agent_ed25519.pub ssh/known_hosts ts-backup/tailscaled.state
+host.txt port.txt socks.txt user.txt .ts-authkey remote.sh session.sh"
+
+# Mirror critical files BOTH WAYS. Called first thing and again before we hand
+# over to the command: steps 1-2 can `exit 1`, and a backup taken only on the
+# happy path is missing exactly when the link broke. Also self-heals $BR from
+# $SPARE, because the snapshot of $PERSIST silently drops some freshly written
+# files (ssh-keygen output, curl+mv, append-redirects) - see README.
+sync_spare() {
+  local f
+  mkdir -p "$SPARE/ssh" "$SPARE/ts-backup" 2>/dev/null
+  for f in $CRIT; do
+    [ -s "$BR/$f" ] && { cmp -s "$BR/$f" "$SPARE/$f" 2>/dev/null || cp -f "$BR/$f" "$SPARE/$f" 2>/dev/null; }
+  done
+  for f in $CRIT; do
+    if [ ! -s "$BR/$f" ] && [ -s "$SPARE/$f" ]; then
+      mkdir -p "$(dirname "$BR/$f")" 2>/dev/null
+      cp -f "$SPARE/$f" "$BR/$f" && echo "[session] restored $f from spare" >&2
+    fi
+  done
+  chmod 600 "$BR/ssh/agent_ed25519" "$BR/.ts-authkey" 2>/dev/null
+}
+
 backup_state() {
   [ -s "$STATE" ] && mkdir -p "$BR/ts-backup" \
     && cp "$STATE" "$BR/ts-backup/tailscaled.state" 2>/dev/null
 }
-trap backup_state EXIT
+trap 'backup_state; sync_spare' EXIT
+sync_spare   # early: restore what the snapshot ate, before anything needs it
 
 # -- 0. binaries (volatile /usr/local/bin may be wiped after rebuild) --
 if [ ! -x "$TS_BIN" ] || [ ! -x "$TSD_BIN" ]; then
-  if [ -x "$BR/bin/tailscale" ] && [ -x "$BR/bin/tailscaled" ]; then
-    install -m755 "$BR/bin/tailscale"  "$TS_BIN"  2>/dev/null
-    install -m755 "$BR/bin/tailscaled" "$TSD_BIN" 2>/dev/null
-  fi
+  for src in "$BR/bin" "$SPARE/bin"; do
+    if [ -x "$src/tailscale" ] && [ -x "$src/tailscaled" ]; then
+      install -m755 "$src/tailscale"  "$TS_BIN"  2>/dev/null
+      install -m755 "$src/tailscaled" "$TSD_BIN" 2>/dev/null
+      break
+    fi
+  done
 fi
 [ -x "$TSD_BIN" ] || { echo "[session] ERR: no tailscaled — run QWEN/boot.sh first" >&2; exit 1; }
 TS="$TS_BIN --socket=$SOCK"
@@ -133,23 +163,12 @@ if [ -n "$PEER" ]; then
 fi
 
 # -- 4. hot spare of critical files --
-# /home/user once lost a freshly bulk-migrated dir between calls (readdir saw
-# nothing, lookups flickered — volatile overlay/virtiofs race). Small probes
-# survive fine; still, keep a volatile spare and self-heal from it.
-SPARE=/tmp/qwen-bridge-spare
-mkdir -p "$SPARE/ssh" "$SPARE/ts-backup"
-CRIT="ssh/agent_ed25519 ssh/agent_ed25519.pub ssh/known_hosts ts-backup/tailscaled.state host.txt port.txt socks.txt user.txt .ts-authkey remote.sh session.sh"
-for f in $CRIT; do
-  [ -e "$BR/$f" ] && cp -f "$BR/$f" "$SPARE/$f" 2>/dev/null
-done
-for f in $CRIT; do
-  if [ ! -e "$BR/$f" ] && [ -e "$SPARE/$f" ]; then
-    mkdir -p "$(dirname "$BR/$f")" && cp -f "$SPARE/$f" "$BR/$f" \
-      && echo "[session] restored $f from spare"
-  fi
-done
-chmod 600 "$BR/ssh/agent_ed25519" "$BR/.ts-authkey" 2>/dev/null
+# Second sync (the first one runs at the top, before any `exit 1` path):
+# step 3 may have just written host.txt/port.txt/socks.txt and the daemon may
+# have produced fresh node state worth backing up.
+sync_spare
 
 backup_state
+sync_spare   # exec replaces this process: the EXIT trap will not fire
 if [ $# -gt 0 ]; then exec "$@"; fi
 $TS status 2>&1 | head -8

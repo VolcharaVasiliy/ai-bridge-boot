@@ -24,8 +24,28 @@ if ! { mkdir -p "$PERSIST" 2>/dev/null && touch "$PERSIST/.wtest" 2>/dev/null &&
   echo "!!          State will NOT survive a sandbox rebuild."
 fi
 BR="$PERSIST/qwen-bridge"
+SPARE="${QWEN_SPARE:-/tmp/qwen-bridge-spare}"   # volatile twin of $BR
 TS_VER="${TS_VER:-1.104.1}"
 TS_HOSTNAME="${TS_HOSTNAME:-qwen-agent}"
+
+# The snapshot of $PERSIST is LOSSY. Measured 2026-10-16 (Qwen sandbox, overlay
+# mounted `volatile`): files written by ssh-keygen and by `curl -o X.tmp && mv
+# X.tmp X` were gone at the next agent call, while files from `install` (75 MB
+# binaries), `printf >` and a whole `git clone` survived. It is not
+# deterministic — the same key survived one call boundary and not the next.
+# So: every critical artifact is mirrored into $SPARE and PROVEN readable back
+# from both copies before we move on.
+persist() {  # $1 = path relative to $BR; returns 0 only if both copies verify
+  local rel="$1" i
+  mkdir -p "$SPARE/$(dirname "$rel")" 2>/dev/null
+  for i in 1 2 3; do
+    [ -s "$BR/$rel" ] && cp -f "$BR/$rel" "$SPARE/$rel" 2>/dev/null
+    cmp -s "$BR/$rel" "$SPARE/$rel" 2>/dev/null && return 0
+    [ -s "$SPARE/$rel" ] && cp -f "$SPARE/$rel" "$BR/$rel" 2>/dev/null
+    sync 2>/dev/null
+  done
+  return 1
+}
 
 echo "== QWEN bridge boot (no-systemd sandbox) =="
 echo "   repo:       $REPO @ $REF"
@@ -73,20 +93,57 @@ if [ -d "$PERSIST/arena-bridge" ] && [ "$PERSIST/arena-bridge" != "$BR" ]; then
 fi
 
 # -- 2. agent SSH key (own key, never a shared one) --
-if [ ! -f "$BR/ssh/agent_ed25519" ]; then
-  ssh-keygen -q -t ed25519 -N '' -f "$BR/ssh/agent_ed25519" -C "$TS_HOSTNAME"
+# RESTORE BEFORE GENERATING. A key lost from $BR used to mean a brand new
+# pubkey, silently invalidating the line the owner already put into
+# authorized_keys. The spare copy keeps the identity stable across snapshots.
+if [ ! -s "$BR/ssh/agent_ed25519" ] && [ -s "$SPARE/ssh/agent_ed25519" ]; then
+  mkdir -p "$BR/ssh" && chmod 700 "$BR/ssh" 2>/dev/null
+  cp -f "$SPARE/ssh/agent_ed25519" "$BR/ssh/agent_ed25519"
+  cp -f "$SPARE/ssh/agent_ed25519.pub" "$BR/ssh/agent_ed25519.pub" 2>/dev/null
+  echo "   agent key restored from spare (pubkey unchanged)"
+fi
+if [ ! -s "$BR/ssh/agent_ed25519" ]; then
+  ssh-keygen -q -t ed25519 -N '' -f "$BR/ssh/agent_ed25519" -C "$TS_HOSTNAME" </dev/null
   echo "   generated new agent key"
 fi
 chmod 600 "$BR/ssh/agent_ed25519" 2>/dev/null
-[ -s "$BR/.ts-authkey" ] && chmod 600 "$BR/.ts-authkey"
+# .pub can be lost on its own; it is derivable from the private key
+[ -s "$BR/ssh/agent_ed25519.pub" ] \
+  || ssh-keygen -y -f "$BR/ssh/agent_ed25519" > "$BR/ssh/agent_ed25519.pub" 2>/dev/null
+if persist ssh/agent_ed25519 && persist ssh/agent_ed25519.pub; then
+  echo "   key mirrored to $SPARE and verified in both copies"
+else
+  echo "!! WARN: agent key is NOT stable — the owner may have to re-add the pubkey"
+fi
+if [ -s "$BR/.ts-authkey" ]; then chmod 600 "$BR/.ts-authkey"; persist .ts-authkey; fi
 
 # -- 3. scripts: remote.sh is shared with linux/; session.sh is QWEN-specific --
+# Prefer a local git clone over raw.githubusercontent: no CDN staleness (raw can
+# serve a pre-push version for ~30 min) and it works with no network at all.
+CLONE="${AI_BRIDGE_CLONE:-}"
+if [ -z "$CLONE" ]; then
+  for d in "$PERSIST/ai-bridge-boot" "$HOME/ai-bridge-boot" "$PERSIST"/*/ai-bridge-boot; do
+    if [ -s "$d/linux/remote.sh" ] && [ -s "$d/QWEN/session.sh" ]; then CLONE="$d"; break; fi
+  done
+fi
+[ -n "$CLONE" ] && echo "   script source: local clone $CLONE"
+
+get_script() {  # $1 = name under $BR, $2 = path in clone, $3 = raw URL
+  local name="$1" crel="$2" url="$3"
+  if [ -n "$CLONE" ] && [ -s "$CLONE/$crel" ]; then
+    cp -f "$CLONE/$crel" "$BR/$name" 2>/dev/null
+  else
+    curl -fsSL --retry 3 --retry-delay 2 -o "$BR/$name.tmp" "$url" \
+      && mv "$BR/$name.tmp" "$BR/$name" || rm -f "$BR/$name.tmp"
+  fi
+  # last resort: whatever the spare saved on a previous run
+  [ -s "$BR/$name" ] || { [ -s "$SPARE/$name" ] && cp -f "$SPARE/$name" "$BR/$name"; }
+  chmod +x "$BR/$name" 2>/dev/null
+  persist "$name"
+}
 fetch_ok=1
-curl -fsSL --retry 3 --retry-delay 2 -o "$BR/remote.sh.tmp"  "$BASE/linux/remote.sh" \
-  && mv "$BR/remote.sh.tmp" "$BR/remote.sh" || { rm -f "$BR/remote.sh.tmp"; [ -s "$BR/remote.sh" ] || fetch_ok=0; }
-curl -fsSL --retry 3 --retry-delay 2 -o "$BR/session.sh.tmp" "$BASE/QWEN/session.sh" \
-  && mv "$BR/session.sh.tmp" "$BR/session.sh" || { rm -f "$BR/session.sh.tmp"; [ -s "$BR/session.sh" ] || fetch_ok=0; }
-chmod +x "$BR/remote.sh" "$BR/session.sh" 2>/dev/null
+get_script remote.sh  linux/remote.sh "$BASE/linux/remote.sh" || fetch_ok=0
+get_script session.sh QWEN/session.sh "$BASE/QWEN/session.sh" || fetch_ok=0
 [ "$fetch_ok" = 1 ] || { echo "!! cannot fetch scripts and no local copies — abort"; exit 1; }
 
 # -- 4. tailscale binaries: persistent copy + volatile install --
@@ -103,7 +160,7 @@ $SUDO install -m755 "$BR/bin/tailscaled" /usr/local/bin/tailscaled 2>/dev/null
 
 # -- 5. bring the link up (daemon/state/login/peer) --
 echo
-TS_HOSTNAME="$TS_HOSTNAME" bash "$BR/session.sh"
+QWEN_PERSIST="$PERSIST" QWEN_SPARE="$SPARE" TS_HOSTNAME="$TS_HOSTNAME" bash "$BR/session.sh"
 
 # -- 6. report + next steps --
 echo
