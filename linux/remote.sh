@@ -73,9 +73,17 @@ JOB_FWD="C:/Users/$RUSER/agent-bridge/jobs"
 JOB_BS="C:\\\\Users\\\\$RUSER\\\\agent-bridge\\\\jobs"
 
 # silence PS progress records inside remote sessions (CLIXML spam guard)
-PS_PRE='\$ProgressPreference='"'"'SilentlyContinue'"'"''
+PS_PRE='$ProgressPreference='"'"'SilentlyContinue'"'"''
 
 rsh() { ssh "${SSH_BASE[@]}" "$RUSER@$HOST" "$@"; }
+
+psenc() {  # PowerShell code from stdin -> executed via -EncodedCommand.
+  # No ssh->cmd->powershell quote nesting at all (that nesting silently broke
+  # b64read/ren/poll on at least one PC - fixed 2026-10-16, QWEN setup).
+  local enc
+  enc="$(iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
+  rsh powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "$enc"
+}
 
 # --- control-master socket housekeeping --------------------
 cm_file() { echo "$HOME/.ssh/cm-$RUSER@$HOST:$PORT"; }
@@ -101,8 +109,8 @@ retry() {
 }
 
 b64read() {  # remote file -> single-line base64 (empty on any error)
-  rsh "powershell -NoProfile -Command \\\"try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('$1')) } catch { }\\\"" 2>/dev/null \
-    | tr -d '\r\n'
+  printf "\$ProgressPreference='SilentlyContinue'; try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('%s')) } catch { }" "$1" \
+    | psenc 2>/dev/null | tr -d '\r\n'
 }
 rd() { b64read "$1" | base64 -d 2>/dev/null || true; }
 
@@ -239,7 +247,7 @@ EOF
     ;;
 
   elev-stop)
-    rsh "powershell -NoProfile -Command \\\"Set-Content -LiteralPath '$WIN_BS\\\\STOP' -Value stop -Force\\\"" \
+    printf "\$ProgressPreference='SilentlyContinue'; Set-Content -LiteralPath '%s/STOP' -Value stop -Force" "$WIN_FWD" | psenc \
       && echo "STOP file created - runner will pause after the current job"
     ;;
 
@@ -282,13 +290,13 @@ EOF
     scp "${SCP_BASE[@]}" -q "$tmp" "$RUSER@$HOST:$WIN_FWD/in/$id.ps1.tmp" \
       || { echo "[elev] upload failed" >&2; rm -f "$tmp"; exit 5; }
     rm -f "$tmp"
-    rsh "cmd /c ren \\\"$WIN_BS\\\\in\\\\$id.ps1.tmp\\\" \\\"$id.ps1\\\"" >/dev/null 2>&1
+    printf "Rename-Item -LiteralPath '%s/in/%s.ps1.tmp' -NewName '%s.ps1' -Force" "$WIN_FWD" "$id" "$id" | psenc >/dev/null 2>&1
     echo "[elev] job $id submitted"
 
     prev=0; waited=0; max="${ELEV_MAX:-1200}"
     outf="$(mktemp)"
     while [ "$waited" -lt "$max" ]; do
-      resp="$(rsh "powershell -NoProfile -Command \\\"try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('$WIN_BS\\\\out\\\\$id.ps1.out')) } catch { }; '===M==='; if (Test-Path '$WIN_BS\\\\out\\\\$id.ps1.done') { 'DONE' } else { 'RUN' }\\\"" 2>/dev/null || true)"
+      resp="$(printf "\$ProgressPreference='SilentlyContinue'; try { [Convert]::ToBase64String([IO.File]::ReadAllBytes('%s/out/%s.ps1.out')) } catch { }; '===M==='; if (Test-Path -LiteralPath '%s/out/%s.ps1.done') { 'DONE' } else { 'RUN' }" "$WIN_FWD" "$id" "$WIN_FWD" "$id" | psenc 2>/dev/null || true)"
 
       b64="$(printf '%s\n' "$resp" | sed '/^===M===[[:space:]]*$/,$d' | tr -d '\r\n')"
       flag="$(printf '%s\n' "$resp" | awk 'f{print} /^===M===/{f=1}' | tr -d '\r\n ')"
